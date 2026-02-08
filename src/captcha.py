@@ -495,11 +495,18 @@ class EnhancedCaptchaSolver:
             # 2. Remove noise (median blur) - Optional, can be aggressive
             # gray = cv2.medianBlur(gray, 3) 
             
-            # 3. Thresholding (Otsu's Binarization) - makes text black/white
+            # 2. Thresholding (Otsu's Binarization) - makes text black/white
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
+            # 3. Morphological Denoising (The Fix for Lines/Dots)
+            kernel = np.ones((2,2), np.uint8)
+            # Opening: Erosion followed by Dilation (Removes small noise/thin lines)
+            opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+            # Closing: Dilation followed by Erosion (Closes gaps in text)
+            closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel, iterations=1)
+            
             # Encode back to bytes
-            _, encoded_img = cv2.imencode('.png', thresh)
+            _, encoded_img = cv2.imencode('.png', closing)
             return encoded_img.tobytes()
         except Exception as e:
             logger.debug(f"Image preprocessing failed: {e}")
