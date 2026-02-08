@@ -473,6 +473,37 @@ class EnhancedCaptchaSolver:
         if code_len in [4, 5]:
             logger.warning(f"[{location}] OCR incomplete: '{code}' ({code_len} chars) -需要6个字符!")
             return False, "TOO_SHORT"
+
+    def _preprocess_image(self, image_bytes: bytes) -> bytes:
+        """
+        Enhance image for OCR:
+        1. Grayscale
+        2. Denoising
+        3. Thresholding (Binarization)
+        """
+        if not OPENCV_AVAILABLE:
+            return image_bytes
+
+        try:
+            # Decode to numpy array
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            # 1. Grayscale
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # 2. Remove noise (median blur) - Optional, can be aggressive
+            # gray = cv2.medianBlur(gray, 3) 
+            
+            # 3. Thresholding (Otsu's Binarization) - makes text black/white
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Encode back to bytes
+            _, encoded_img = cv2.imencode('.png', thresh)
+            return encoded_img.tobytes()
+        except Exception as e:
+            logger.debug(f"Image preprocessing failed: {e}")
+            return image_bytes
     def solve(self, image_bytes: bytes, location: str = "SOLVE") -> Tuple[str, str]:
         """
         Solve captcha from image bytes with validation
