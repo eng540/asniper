@@ -1304,11 +1304,13 @@ class EliteSniperV2:
                         session.pre_attack_reset_done = True
                         
                         # Pre-solve captcha while waiting
-                        try:
-                            page.goto(self.base_url, timeout=15000, wait_until="domcontentloaded")
-                            self.solver.pre_solve(page, "PRE_ATTACK")
-                        except:
-                            pass
+                        for _ in range(3):
+                            try:
+                                page.goto(self.base_url, timeout=30000, wait_until="domcontentloaded")
+                                self.solver.pre_solve(page, "PRE_ATTACK")
+                                break
+                            except:
+                                time.sleep(2)
                         
                         continue
                     
@@ -1535,9 +1537,28 @@ class EliteSniperV2:
         Returns: True if booking flow should continue, False to stop/restart
         """
         try:
-            # A. NAVIGATION
+            # A. ROBUST NAVIGATION with Retry Logic
             logger.info(f"🌐 Navigating to: {url[:60]}...")
-            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            
+            max_nav_retries = 3
+            for nav_attempt in range(max_nav_retries):
+                try:
+                    # Extended timeout for Railway environment (60s)
+                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                    break # Success!
+                except Exception as nav_e:
+                    logger.warning(f"⚠️ Navigation failed (Attempt {nav_attempt+1}/{max_nav_retries}): {nav_e}")
+                    
+                    if nav_attempt < max_nav_retries - 1:
+                        # Exponential Backoff: 5s, 10s...
+                        sleep_time = 5.0 * (nav_attempt + 1)
+                        logger.info(f"💤 Cooling down {sleep_time}s before retry...")
+                        time.sleep(sleep_time)
+                        continue
+                    else:
+                        # Final failure - re-raise to crash session explicitly or return False
+                        logger.error(f"❌ Max navigation retries reached for {url}")
+                        return False
             session.current_url = url
             session.touch()
             self.global_stats.pages_loaded += 1
