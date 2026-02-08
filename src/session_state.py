@@ -93,6 +93,7 @@ class SessionState:
     # Counters
     failures: int = 0
     consecutive_errors: int = 0
+    consecutive_network_failures: int = 0  # NEW: Track timeouts/network errors
     pages_loaded: int = 0
     navigation_errors: int = 0
     
