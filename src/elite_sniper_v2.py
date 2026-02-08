@@ -693,23 +693,30 @@ class EliteSniperV2:
                             logger.warning(f"[CATEGORY] Selection failed for '{opt['text']}': {e}")
                             continue
             
-            # No keyword match found - fallback to first non-empty option
-            logger.warning("[CATEGORY] No keyword match found, using fallback")
-            for opt in all_options:
-                if opt["value"]:  # Skip placeholder options
-                    try:
-                        opt["select"].select_option(value=opt["value"])
-                        logger.info(f"[CATEGORY] Fallback selected: '{opt['text']}' (value={opt['value']})")
-                        page.evaluate("""
-                            const selects = document.querySelectorAll('select');
-                            selects.forEach(s => {
-                                s.dispatchEvent(new Event('input', { bubbles: true }));
-                                s.dispatchEvent(new Event('change', { bubbles: true }));
-                            });
-                        """)
-                        return True
-                    except Exception:
-                        continue
+            # No keyword match found - fallback to 2nd option (Index 1)
+            logger.warning("[CATEGORY] No keyword match found, using fallback (Option 2)")
+            
+            # Filter out empty/placeholder options
+            valid_options = [opt for opt in all_options if opt["value"]]
+            
+            if len(valid_options) >= 2:
+                fallback_opt = valid_options[1] # Index 1 is the second option
+                try:
+                    fallback_opt["select"].select_option(value=fallback_opt["value"])
+                    logger.info(f"[CATEGORY] Fallback selected: '{fallback_opt['text']}' (value={fallback_opt['value']})")
+                    
+                    page.evaluate("""
+                        const selects = document.querySelectorAll('select');
+                        selects.forEach(s => {
+                            s.dispatchEvent(new Event('input', { bubbles: true }));
+                            s.dispatchEvent(new Event('change', { bubbles: true }));
+                        });
+                    """)
+                    return True
+                except Exception as e:
+                    logger.warning(f"[CATEGORY] Fallback selection failed: {e}")
+            else:
+                logger.warning("[CATEGORY] Not enough options for fallback selection")
             
             return False
             
