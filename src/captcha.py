@@ -7,6 +7,12 @@ import time
 import logging
 from typing import Optional, List, Tuple
 from playwright.sync_api import Page
+import numpy as np
+try:
+    import cv2
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
 
 logger = logging.getLogger("EliteSniperV2.Captcha")
 
@@ -497,8 +503,16 @@ class EnhancedCaptchaSolver:
             best_len = 0
             
             for attempt in range(max_attempts):
+                # Adaptive Strategy:
+                # Attempt 1: Raw Image (Fastest, best for clean captchas)
+                # Attempt 2+: Preprocessed Image (Slower, better for noisy captchas)
+                
+                current_bytes = image_bytes
+                if attempt > 0:
+                    current_bytes = self._preprocess_image(image_bytes)
+                
                 # Solve using OCR
-                result = self.ocr.classification(image_bytes)
+                result = self.ocr.classification(current_bytes)
                 result = result.replace(" ", "").strip().lower()
                 
                 # Clean common OCR mistakes
@@ -521,7 +535,7 @@ class EnhancedCaptchaSolver:
                 
                 # Otherwise, try again
                 if attempt < max_attempts - 1:
-                    logger.debug(f"[{location}] OCR returned {current_len} chars, retrying... ({attempt+1}/{max_attempts})")
+                    logger.debug(f"[{location}] OCR returned {current_len} chars, retrying with preprocessing... ({attempt+1}/{max_attempts})")
                     time.sleep(0.1)  # Small delay before retry
             
             # Use the best result we got
