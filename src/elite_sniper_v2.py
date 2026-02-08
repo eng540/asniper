@@ -1447,53 +1447,68 @@ class EliteSniperV2:
     def _analyze_page_state(self, page: Page, logger) -> str:
         """
         Analyzes the current page HTML to determine the exact state.
-        Based on actual website HTML structure provided by user.
+        Based on actual website HTML structure.
         
-        Returns: 'CAPTCHA', 'WRONG_CODE', 'EMPTY_CALENDAR', 'SLOTS_FOUND', 'BLOCKED', 'UNKNOWN'
+        PRIORITY ORDER (most important first):
+        1. SLOTS_FOUND - Success! Days available
+        2. EMPTY_CALENDAR - No appointments this month
+        3. WRONG_CODE - Captcha was wrong
+        4. CAPTCHA - Need to solve captcha
+        5. UNKNOWN - Fallback
+        
+        Returns: 'CAPTCHA', 'WRONG_CODE', 'EMPTY_CALENDAR', 'SLOTS_FOUND', 'UNKNOWN'
         """
         try:
-            content = page.content().lower()
-            
-            # 1. Check for Explicit Error (Wrong Code)
-            # HTML: <div id="message" class="global-error"><p>The entered text was wrong</p></div>
+            # Wait for page to stabilize first
             try:
-                if page.locator("div.global-error").is_visible(timeout=500):
-                    return "WRONG_CODE"
+                page.wait_for_load_state("domcontentloaded", timeout=3000)
             except:
                 pass
             
-            if "entered text was wrong" in content:
-                return "WRONG_CODE"
+            time.sleep(0.3)  # Small buffer for dynamic content
             
-            # 2. Check for Slots (Success) - Days with appointments
-            # HTML: <a ... href="...appointment_showDay..." class="arrow">Appointments are available</a>
+            content = page.content().lower()
+            
+            # 1. SLOTS_FOUND - Check first! This is SUCCESS
+            # HTML: <a href="...appointment_showDay..." class="arrow">Appointments are available</a>
             try:
                 slot_count = page.locator("a[href*='appointment_showDay']").count()
                 if slot_count > 0:
+                    logger.info(f"🎯 Detected {slot_count} available day(s)!")
                     return "SLOTS_FOUND"
             except:
                 pass
             
-            # 3. Check for Empty Calendar
+            # 2. EMPTY_CALENDAR - Check second
             # HTML: "Unfortunately, there are no appointments available"
-            if "unfortunately, there are no appointments available" in content or "keine termine" in content:
+            if "unfortunately, there are no appointments available" in content:
+                return "EMPTY_CALENDAR"
+            if "keine termine" in content:
+                return "EMPTY_CALENDAR"
+            if "no appointments" in content and "appointment_showDay" not in content:
                 return "EMPTY_CALENDAR"
             
-            # Also check for "no appointments" text
-            if "no appointments" in content:
-                return "EMPTY_CALENDAR"
-
-            # 4. Check if we are on Captcha Page
+            # 3. WRONG_CODE - Check third
+            # HTML: <div id="message" class="global-error"><p>The entered text was wrong</p></div>
+            if "entered text was wrong" in content:
+                return "WRONG_CODE"
+            try:
+                if page.locator("div.global-error").is_visible(timeout=300):
+                    return "WRONG_CODE"
+            except:
+                pass
+            
+            # 4. CAPTCHA - Check if we're on captcha page
             # HTML: <form id="appointment_captcha_month">
             try:
-                if page.locator("#appointment_captcha_month").is_visible(timeout=500):
+                if page.locator("#appointment_captcha_month").is_visible(timeout=300):
                     return "CAPTCHA"
             except:
                 pass
             
-            # 5. Check for captcha input field as fallback
+            # Fallback: check for captcha input
             try:
-                if page.locator("input[name='captchaText']").is_visible(timeout=500):
+                if page.locator("input[name='captchaText']").is_visible(timeout=300):
                     return "CAPTCHA"
             except:
                 pass
@@ -1611,16 +1626,24 @@ class EliteSniperV2:
                 logger.info(f"📝 Submitting captcha: '{code}'")
                 self.solver.submit_captcha(page, "auto")
                 
-                # Wait for page response
+                # Wait for page response - CRITICAL: Must wait for server to respond
                 try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
+                    # Wait for any state change indicator
+                    page.wait_for_selector(
+                        "div.global-error, a[href*='appointment_showDay'], h2:has-text('Please select')",
+                        timeout=8000
+                    )
                 except:
+                    # Fallback to load state
                     try:
-                        page.wait_for_load_state("domcontentloaded", timeout=3000)
+                        page.wait_for_load_state("networkidle", timeout=5000)
                     except:
-                        pass
+                        try:
+                            page.wait_for_load_state("domcontentloaded", timeout=3000)
+                        except:
+                            pass
                 
-                time.sleep(0.5)  # Small buffer for page to stabilize
+                time.sleep(1.5)  # Increased buffer for page to fully stabilize
                 
                 # Loop will analyze the new state on next iteration
             
@@ -1993,27 +2016,19 @@ class EliteSniperV2:
                     worker_logger.debug(f"Field fill error ({selector}): {e}")
                     continue
 
-            # اختيار الفئة (Category)
-            try:
-                # نستخدم Select Option الأصلي لأنه الأضمن
-                purpose = Config.PURPOSE.lower() if Config.PURPOSE else "aupair"
-                purpose_value = Config.PURPOSE_VALUES.get(purpose, Config.DEFAULT_PURPOSE)
+            # اختيار الفئة (Category) - استخدام Smart Targeting
+            if not self.select_category_by_value(page):
+                worker_logger.warning("Category selection failed via Smart Targeting - attempting fallback...")
                 
-                select_elem = page.locator("select[name='fields[2].content']").first
-                if not select_elem.is_visible():
-                    select_elem = page.locator("select").first
-                
-                if select_elem.is_visible():
-                    # محاولة الاختيار بالقيمة
-                    select_elem.select_option(value=purpose_value)
-                else:
-                    # Fallback: JS Injection for Select only (Selects are tricky)
-                    page.evaluate(f"""
+                # Fallback: Try selecting by index 1
+                try:
+                    page.evaluate("""
                         const s = document.querySelector('select');
-                        if(s) {{ s.selectedIndex = 1; s.dispatchEvent(new Event('change')); }}
+                        if(s) { s.selectedIndex = 1; s.dispatchEvent(new Event('change')); }
                     """)
-            except Exception as e:
-                worker_logger.warning(f"Category selection warning: {e}")
+                    worker_logger.info("Category selected via JS Fallback (Index 1)")
+                except Exception as e:
+                    worker_logger.error(f"Category selection fallback failed: {e}")
 
             self.global_stats.forms_filled += 1
             worker_logger.info("✅ Form filled (Humanized)")
