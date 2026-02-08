@@ -498,7 +498,7 @@ class EnhancedCaptchaSolver:
             
             for attempt in range(max_attempts):
                 # Solve using OCR
-                result = self.ocr.predict(image_bytes)
+                result = self.ocr.classification(image_bytes)
                 result = result.replace(" ", "").strip().lower()
                 
                 # Clean common OCR mistakes
@@ -987,7 +987,7 @@ class CaptchaSolver:
         if not self.ocr:
             return ""
         try:
-            res = self.ocr.predict(image_bytes)
+            res = self.ocr.classification(image_bytes)
             res = res.replace(" ", "").strip()
             print(f"[AI] Captcha Solved: {res}")
             return res
