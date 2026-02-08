@@ -1420,8 +1420,9 @@ class EliteSniperV2:
                     time.sleep(sleep_time)
                     
                     # 4. MAINTENANCE PHASE (GARBAGE COLLECTION)
-                    if session.age() > Config.SESSION_MAX_AGE:
-                        worker_logger.info("♻️ Session aged out - Recreating Context (Anti-Zombie)...")
+                    if session.age() > Config.SESSION_MAX_AGE or getattr(session, 'consecutive_network_failures', 0) >= 2:
+                        reason = "Age" if session.age() > Config.SESSION_MAX_AGE else "Network Instability"
+                        worker_logger.info(f"♻️ Session Reset triggered ({reason}) - Recreating Context...")
                         
                         # STRICT CLEANUP BEFORE REBIRTH
                         try: 
@@ -1558,9 +1559,11 @@ class EliteSniperV2:
                     else:
                         # Final failure - re-raise to crash session explicitly or return False
                         logger.error(f"❌ Max navigation retries reached for {url}")
+                        session.consecutive_network_failures += 1
                         return False
             session.current_url = url
             session.touch()
+            session.consecutive_network_failures = 0  # Reset on success
             self.global_stats.pages_loaded += 1
             
             # B. SMART CAPTCHA SOLVING LOOP
