@@ -162,13 +162,14 @@ class EnhancedCaptchaSolver:
         
         if DDDDOCR_AVAILABLE and not self.manual_only:
             try:
+                # !!! تراجع هام: العودة لاستخدام Beta=True لأنها أثبتت كفاءة أعلى !!!
                 self.ocr = ddddocr.DdddOcr(beta=True)
-                logger.info("Captcha solver initialized (beta mode)")
+                logger.info("Captcha solver initialized (BETA Mode - High Accuracy)")
             except Exception as e:
                 logger.error(f"Captcha solver init failed: {e}")
                 self.ocr = None
         elif not DDDDOCR_AVAILABLE and not self.manual_only:
-            logger.warning("ddddocr not installed - run: pip install ddddocr")
+            logger.warning("ddddocr not available - captcha solving disabled")
     
     def safe_captcha_check(self, page: Page, location: str = "GENERAL") -> Tuple[bool, bool]:
         """
@@ -476,47 +477,37 @@ class EnhancedCaptchaSolver:
 
     def _preprocess_image(self, image_bytes: bytes) -> bytes:
         """
-        Enhance image for OCR:
+        Restored V1 Strong Preprocessing:
         1. Grayscale
-        2. Upscale (2.5x) - Critical for ddddocr accuracy on small text
-        3. Contrast Adjustment (CLAHE)
-        4. Thresholding (Binarization)
-        5. Denoising
+        2. Upscale (2.5x) - Critical for ddddocr accuracy
+        3. Contrast Adjustment (CLAHE) - Critical for faint text
+        4. Thresholding + Denoising
         """
         if not OPENCV_AVAILABLE:
             return image_bytes
 
         try:
-            # Decode to numpy array
             nparr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             # 1. Grayscale
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
-            # 2. Upscale (2.5x) - Helps split joined characters
-            # Inter_cubic is best for text upscaling
+            # 2. Strong Upscale (2.5x) - From V1
             gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
             
-            # 3. Increase Contrast (CLAHE - Contrast Limited Adaptive Histogram Equalization)
+            # 3. Strong Contrast (CLAHE) - From V1
+            # This makes faint text visible
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
             gray = clahe.apply(gray)
             
-            # 4. Thresholding (Otsu's Binarization)
+            # 4. Thresholding
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # 5. Morphological Denoising
-            # Since we upscaled, we can use a slightly larger kernel safely
+            # 5. Denoising - From V1
             kernel = np.ones((2,2), np.uint8)
-            
-            # Opening: Erosion -> Dilation (Removes small dots/noise)
             opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
             
-            # Closing: Dilation -> Erosion (Closes small gaps inside chars)
-            # Optional: sometimes closing connects characters too much, so we test without it first
-            # closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel, iterations=1)
-            
-            # Encode back to bytes
             _, encoded_img = cv2.imencode('.png', opening)
             return encoded_img.tobytes()
         except Exception as e:
@@ -744,32 +735,45 @@ class EnhancedCaptchaSolver:
                 logger.info(f"[{location}] Using pre-solved captcha: '{code}'")
                 self.clear_pre_solved()
             else:
-                # Find captcha image using unified method
-                image_bytes = self._get_captcha_image(page, location)
-                
-                if not image_bytes:
-                    logger.warning(f"[{location}] Captcha image not found")
-                    return False, None, "NO_IMAGE"
-                
-                # Solve captcha with OCR validation
-                code, status = self.solve(image_bytes, location)
-                
-                # Solve captcha with OCR validation
-                code, status = self.solve(image_bytes, location)
-                
-                # ═══════════════════════════════════════════════════════════════
-                # EXECUTION MODE LOGIC
-                # ═══════════════════════════════════════════════════════════════
-                
-                # 1. AUTO MODE: If OCR fails, we SKIP manual fallback
-                if self.auto_only:
+                # [UPDATED] Internal Retry Loop for AUTO mode accuracy
+                internal_max_retries = 3
+                for internal_attempt in range(internal_max_retries):
+                    
+                    # Find captcha image using unified method
+                    image_bytes = self._get_captcha_image(page, location)
+                    
+                    if not image_bytes:
+                        logger.warning(f"[{location}] Captcha image not found")
+                        return False, None, "NO_IMAGE"
+                    
+                    # Solve captcha with OCR validation
+                    code, status = self.solve(image_bytes, location)
+                    
+                    # ═══════════════════════════════════════════════════════════════
+                    # EXECUTION MODE LOGIC
+                    # ═══════════════════════════════════════════════════════════════
+                    
+                    # 1. AUTO MODE: Smart Retry for TOO_SHORT
+                    if self.auto_only:
+                        if status == "TOO_SHORT":
+                            logger.warning(f"[{location}] Result TOO_SHORT in AUTO mode - RELOADING ({internal_attempt+1}/{internal_max_retries})...")
+                            if internal_attempt < internal_max_retries - 1:
+                                self.reload_captcha(page, f"{location}_RELOAD_{internal_attempt}")
+                                continue # NEXT TRY via loop
+                            else:
+                                logger.warning(f"[{location}] Max internal retries reached for TOO_SHORT")
+                                # Fall through to skip logic
+                        
+                        if not code or status in ["TOO_SHORT", "TOO_LONG", "NO_OCR", "MANUAL_REQUIRED"]:
+                            logger.warning(f"[{location}] OCR failed ({status}) and Mode is AUTO - SKIPPING MANUAL")
+                            return False, None, f"AUTO_SKIP_{status}"
+                        
+                        # If we have a code (VALID, AGING, etc.), break loop and submit
+                        break
+                    
+                    # 2. HYBRID/MANUAL MODE: If OCR fails (or skipped in MANUAL), try Telegram
                     if not code or status in ["TOO_SHORT", "TOO_LONG", "NO_OCR", "MANUAL_REQUIRED"]:
-                        logger.warning(f"[{location}] OCR failed ({status}) and Mode is AUTO - SKIPPING MANUAL")
-                        return False, None, f"AUTO_SKIP_{status}"
-                
-                # 2. HYBRID/MANUAL MODE: If OCR fails (or skipped in MANUAL), try Telegram
-                if not code or status in ["TOO_SHORT", "TOO_LONG", "NO_OCR", "MANUAL_REQUIRED"]:
-                    logger.info(f"[{location}] OCR failed ({status}), trying manual Telegram...")
+                        logger.info(f"[{location}] OCR failed ({status}), trying manual Telegram...")
                     
                     # Request manual solution via Telegram
                     manual_code = self.manual_handler.request_manual_solution(
