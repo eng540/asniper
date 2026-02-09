@@ -744,32 +744,45 @@ class EnhancedCaptchaSolver:
                 logger.info(f"[{location}] Using pre-solved captcha: '{code}'")
                 self.clear_pre_solved()
             else:
-                # Find captcha image using unified method
-                image_bytes = self._get_captcha_image(page, location)
-                
-                if not image_bytes:
-                    logger.warning(f"[{location}] Captcha image not found")
-                    return False, None, "NO_IMAGE"
-                
-                # Solve captcha with OCR validation
-                code, status = self.solve(image_bytes, location)
-                
-                # Solve captcha with OCR validation
-                code, status = self.solve(image_bytes, location)
-                
-                # ═══════════════════════════════════════════════════════════════
-                # EXECUTION MODE LOGIC
-                # ═══════════════════════════════════════════════════════════════
-                
-                # 1. AUTO MODE: If OCR fails, we SKIP manual fallback
-                if self.auto_only:
+                # [UPDATED] Internal Retry Loop for AUTO mode accuracy
+                internal_max_retries = 3
+                for internal_attempt in range(internal_max_retries):
+                    
+                    # Find captcha image using unified method
+                    image_bytes = self._get_captcha_image(page, location)
+                    
+                    if not image_bytes:
+                        logger.warning(f"[{location}] Captcha image not found")
+                        return False, None, "NO_IMAGE"
+                    
+                    # Solve captcha with OCR validation
+                    code, status = self.solve(image_bytes, location)
+                    
+                    # ═══════════════════════════════════════════════════════════════
+                    # EXECUTION MODE LOGIC
+                    # ═══════════════════════════════════════════════════════════════
+                    
+                    # 1. AUTO MODE: Smart Retry for TOO_SHORT
+                    if self.auto_only:
+                        if status == "TOO_SHORT":
+                            logger.warning(f"[{location}] Result TOO_SHORT in AUTO mode - RELOADING ({internal_attempt+1}/{internal_max_retries})...")
+                            if internal_attempt < internal_max_retries - 1:
+                                self.reload_captcha(page, f"{location}_RELOAD_{internal_attempt}")
+                                continue # NEXT TRY via loop
+                            else:
+                                logger.warning(f"[{location}] Max internal retries reached for TOO_SHORT")
+                                # Fall through to skip logic
+                        
+                        if not code or status in ["TOO_SHORT", "TOO_LONG", "NO_OCR", "MANUAL_REQUIRED"]:
+                            logger.warning(f"[{location}] OCR failed ({status}) and Mode is AUTO - SKIPPING MANUAL")
+                            return False, None, f"AUTO_SKIP_{status}"
+                        
+                        # If we have a code (VALID, AGING, etc.), break loop and submit
+                        break
+                    
+                    # 2. HYBRID/MANUAL MODE: If OCR fails (or skipped in MANUAL), try Telegram
                     if not code or status in ["TOO_SHORT", "TOO_LONG", "NO_OCR", "MANUAL_REQUIRED"]:
-                        logger.warning(f"[{location}] OCR failed ({status}) and Mode is AUTO - SKIPPING MANUAL")
-                        return False, None, f"AUTO_SKIP_{status}"
-                
-                # 2. HYBRID/MANUAL MODE: If OCR fails (or skipped in MANUAL), try Telegram
-                if not code or status in ["TOO_SHORT", "TOO_LONG", "NO_OCR", "MANUAL_REQUIRED"]:
-                    logger.info(f"[{location}] OCR failed ({status}), trying manual Telegram...")
+                        logger.info(f"[{location}] OCR failed ({status}), trying manual Telegram...")
                     
                     # Request manual solution via Telegram
                     manual_code = self.manual_handler.request_manual_solution(
