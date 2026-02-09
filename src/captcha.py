@@ -478,8 +478,10 @@ class EnhancedCaptchaSolver:
         """
         Enhance image for OCR:
         1. Grayscale
-        2. Denoising
-        3. Thresholding (Binarization)
+        2. Upscale (2.5x) - Critical for ddddocr accuracy on small text
+        3. Contrast Adjustment (CLAHE)
+        4. Thresholding (Binarization)
+        5. Denoising
         """
         if not OPENCV_AVAILABLE:
             return image_bytes
@@ -492,21 +494,30 @@ class EnhancedCaptchaSolver:
             # 1. Grayscale
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
-            # 2. Remove noise (median blur) - Optional, can be aggressive
-            # gray = cv2.medianBlur(gray, 3) 
+            # 2. Upscale (2.5x) - Helps split joined characters
+            # Inter_cubic is best for text upscaling
+            gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
             
-            # 2. Thresholding (Otsu's Binarization) - makes text black/white
+            # 3. Increase Contrast (CLAHE - Contrast Limited Adaptive Histogram Equalization)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            gray = clahe.apply(gray)
+            
+            # 4. Thresholding (Otsu's Binarization)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # 3. Morphological Denoising (The Fix for Lines/Dots)
+            # 5. Morphological Denoising
+            # Since we upscaled, we can use a slightly larger kernel safely
             kernel = np.ones((2,2), np.uint8)
-            # Opening: Erosion followed by Dilation (Removes small noise/thin lines)
+            
+            # Opening: Erosion -> Dilation (Removes small dots/noise)
             opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
-            # Closing: Dilation followed by Erosion (Closes gaps in text)
-            closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel, iterations=1)
+            
+            # Closing: Dilation -> Erosion (Closes small gaps inside chars)
+            # Optional: sometimes closing connects characters too much, so we test without it first
+            # closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel, iterations=1)
             
             # Encode back to bytes
-            _, encoded_img = cv2.imencode('.png', closing)
+            _, encoded_img = cv2.imencode('.png', opening)
             return encoded_img.tobytes()
         except Exception as e:
             logger.debug(f"Image preprocessing failed: {e}")
