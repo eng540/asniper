@@ -1411,6 +1411,11 @@ class EliteSniperV2:
                         if self._process_month_page(page, session, url, worker_logger):
                             return  # SUCCESS or CRITICAL STOP
                         
+                        # CIRCUIT BREAKER: Fail Fast on Network Issues
+                        if getattr(session, 'consecutive_network_failures', 0) >= 2:
+                             worker_logger.warning("⚡ Circuit Breaker Triggered: Network Unstable. Resetting session...")
+                             break
+                        
                         # Small delay between months
                         time.sleep(random.uniform(1, 2))
                     
@@ -1541,7 +1546,7 @@ class EliteSniperV2:
             # A. ROBUST NAVIGATION with Retry Logic
             logger.info(f"🌐 Navigating to: {url[:60]}...")
             
-            max_nav_retries = 3
+            max_nav_retries = 2  # Reduced to 2 for Fail Fast strategy
             for nav_attempt in range(max_nav_retries):
                 try:
                     # Extended timeout for Railway environment (60s)
