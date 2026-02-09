@@ -1726,12 +1726,14 @@ class EliteSniperV2:
                 return False
                 
             # 2. CAPTCHA SOLVE
+            captcha_code = None
             has_captcha, _ = self.solver.safe_captcha_check(page, "FORM")
             if has_captcha:
                 success, code, _ = self.solver.solve_form_captcha_with_retry(page, "BOOKING")
                 if not success:
                     logger.warning("❌ Booking Captcha Failed")
                     return False
+                captcha_code = code
             
             # 3. DRY RUN CHECK
             if Config.DRY_RUN:
@@ -1741,7 +1743,7 @@ class EliteSniperV2:
                 return True # Treat as success
                 
             # 4. SMART SUBMIT
-            return self._submit_form(page, session, logger)
+            return self._submit_form(page, session, logger, initial_code=captcha_code)
             
         except Exception as e:
             logger.error(f"❌ Booking error: {e}")
@@ -2084,10 +2086,11 @@ class EliteSniperV2:
         except:
             return False
     
-    def _submit_form(self, page: Page, session: SessionState, worker_logger) -> bool:
+    def _submit_form(self, page: Page, session: SessionState, worker_logger, initial_code: Optional[str] = None) -> bool:
         """
         [HUMAN-LIKE SUBMISSION] Smart submit with proper waiting and validation.
         Prevents race conditions by waiting for server response.
+        Optimization: Accepts initial_code to skip redundant solving on first attempt.
         """
         max_attempts = 5  # Reduced from 15 (Quality over Quantity)
         worker_logger.info(f"🚀 STARTING SMART SUBMISSION SEQUENCE...")
@@ -2103,12 +2106,21 @@ class EliteSniperV2:
                     time.sleep(1)
                     continue
 
-                # 2. SOLVE CAPTCHA (Fresh solve each attempt)
-                success, code, _ = self.solver.solve_from_page(page, f"SUBMIT_{attempt}")
-                if not success or not code:
-                    worker_logger.warning("🔄 Captcha solve failed, refreshing...")
-                    self._refresh_captcha(page)
-                    continue
+                # 2. SOLVE CAPTCHA (Or use pre-solved code)
+                code = None
+                
+                # Attempt 1 Optimization: Use initial_code if available
+                if attempt == 1 and initial_code:
+                    worker_logger.info(f"⚡ [SPEED] Using pre-filled captcha code: '{initial_code}'")
+                    code = initial_code
+                else:
+                    # Standard behavior: Solve from scratch
+                    # Also applies if initial_code failed (Attempt > 1)
+                    success, code, _ = self.solver.solve_from_page(page, f"SUBMIT_{attempt}")
+                    if not success or not code:
+                        worker_logger.warning("🔄 Captcha solve failed, refreshing...")
+                        self._refresh_captcha(page)
+                        continue
 
                 # 3. INTERACT (Human Timing)
                 worker_logger.info(f"⌨️ Attempt {attempt}: Entering code '{code}'...")
