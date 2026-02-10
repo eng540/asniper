@@ -1,6 +1,6 @@
 """
-Elite Sniper v2.0 - High-Performance Captcha System
-Architecture: Strategy Pattern with Synchronous Optimization
+Elite Sniper v2.0 - Hybrid Captcha System (FIXED)
+Combines Strategy Pattern (CapSolver/CapMonster) with Legacy API Compatibility
 """
 
 import time
@@ -14,7 +14,6 @@ import numpy as np
 
 # Import config
 from .config import Config
-from . import notifier
 
 # Setup Logger
 logger = logging.getLogger("EliteSniperV2.Captcha")
@@ -32,119 +31,52 @@ try:
 except ImportError:
     DDDDOCR_AVAILABLE = False
 
+try:
+    from . import notifier
+    NOTIFIER_AVAILABLE = True
+except ImportError:
+    NOTIFIER_AVAILABLE = False
+
 # ==============================================================================
-# STRATEGY INTERFACE
+# 1. STRATEGY PATTERN (The Engine)
 # ==============================================================================
 
 class CaptchaStrategy(abc.ABC):
-    """Abstract Base Class for Captcha Solvers"""
-    
     @abc.abstractmethod
     def solve(self, image_bytes: bytes) -> str:
-        """Solve the captcha image and return the code"""
         pass
-
     def name(self) -> str:
         return self.__class__.__name__
 
-# ==============================================================================
-# STRATEGY: LOCAL (ddddocr)
-# ==============================================================================
-
-class LocalDDDDOCRStrategy(CaptchaStrategy):
-    """Local solver using ddddocr (Backup only in Production)"""
-    
-    def __init__(self):
-        if not DDDDOCR_AVAILABLE:
-            raise ImportError("ddddocr is not installed")
-        self.ocr = ddddocr.DdddOcr(beta=True)
-        
-    def _preprocess(self, image_bytes: bytes) -> bytes:
-        """Apply V1 Strong Preprocessing (Only needed for local OCR)"""
-        if not OPENCV_AVAILABLE: return image_bytes
-        try:
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            gray = clahe.apply(gray)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            _, encoded_img = cv2.imencode('.png', thresh)
-            return encoded_img.tobytes()
-        except:
-            return image_bytes
-
-    def solve(self, image_bytes: bytes) -> str:
-        try:
-            # Try raw first for speed
-            res = self.ocr.classification(image_bytes)
-            if len(res) == 6: return res
-            # Retry with heavy preprocessing
-            return self.ocr.classification(self._preprocess(image_bytes))
-        except Exception:
-            return ""
-
-# ==============================================================================
-# STRATEGY: CAPSOLVER (OPTIMIZED)
-# ==============================================================================
-
 class CapSolverStrategy(CaptchaStrategy):
-    """
-    CapSolver Strategy - Optimized for Production
-    Uses 'ImageToTextTask' in Synchronous mode (CreateTask returns result directly)
-    """
-    
+    """CapSolver (Synchronous & Fast)"""
     def __init__(self, api_key: str):
         self.api_key = api_key
-        # For ImageToText, createTask returns the solution immediately if configured right
         self.url = "https://api.capsolver.com/createTask"
         
     def solve(self, image_bytes: bytes) -> str:
         if not self.api_key: return ""
-        
         try:
-            # Clean Base64 (No newlines allowed)
             img_b64 = base64.b64encode(image_bytes).decode('utf-8').replace("\n", "")
-            
             payload = {
                 "clientKey": self.api_key,
                 "task": {
                     "type": "ImageToTextTask",
-                    "module": "common", # 'common' handles mixed alphanumeric well
+                    "module": "common",
                     "body": img_b64
                 }
             }
-            
-            # Send Request (Timeout 10s is plenty for sync API)
-            logger.info("[CapSolver] Sending sync request...")
             resp = requests.post(self.url, json=payload, timeout=10)
             data = resp.json()
-            
-            # Check for immediate error
-            if data.get('errorId') != 0:
-                logger.error(f"[CapSolver] Error: {data.get('errorDescription')}")
-                return ""
-            
-            # Direct Result Extraction
             if data.get('status') == 'ready':
-                solution = data.get('solution', {}).get('text')
-                logger.info(f"[CapSolver] SOLVED: {solution}")
-                return solution
-                
-            logger.warning(f"[CapSolver] Unexpected status: {data.get('status')}")
+                return data.get('solution', {}).get('text')
             return ""
-            
         except Exception as e:
-            logger.error(f"[CapSolver] Exception: {e}")
+            logger.error(f"[CapSolver] Error: {e}")
             return ""
-
-# ==============================================================================
-# STRATEGY: OTHERS (CapMonster, 2Captcha)
-# ==============================================================================
 
 class CapMonsterStrategy(CaptchaStrategy):
-    """CapMonster Cloud Strategy"""
+    """CapMonster Cloud"""
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.create_url = "https://api.capmonster.cloud/createTask"
@@ -155,194 +87,244 @@ class CapMonsterStrategy(CaptchaStrategy):
         try:
             img_b64 = base64.b64encode(image_bytes).decode('utf-8').replace("\n", "")
             payload = {"clientKey": self.api_key, "task": {"type": "ImageToTextTask", "body": img_b64}}
-            
-            # Create
             resp = requests.post(self.create_url, json=payload, timeout=10)
             if resp.json().get("errorId") != 0: return ""
             task_id = resp.json().get("taskId")
-            
-            # Poll
-            for _ in range(20): # 10 seconds max
+            for _ in range(20):
                 time.sleep(0.5)
                 res = requests.post(self.res_url, json={"clientKey": self.api_key, "taskId": task_id}, timeout=5).json()
-                if res.get("status") == "ready": 
-                    return res.get("solution", {}).get("text")
+                if res.get("status") == "ready": return res.get("solution", {}).get("text")
             return ""
         except: return ""
 
-class TwoCaptchaStrategy(CaptchaStrategy):
-    """2Captcha Strategy"""
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.in_url = "http://2captcha.com/in.php"
-        self.res_url = "http://2captcha.com/res.php"
-        
+class LocalDDDDOCRStrategy(CaptchaStrategy):
+    """Local Fallback"""
+    def __init__(self):
+        if DDDDOCR_AVAILABLE:
+            self.ocr = ddddocr.DdddOcr(beta=True)
+        else:
+            self.ocr = None
     def solve(self, image_bytes: bytes) -> str:
-        if not self.api_key: return ""
+        if not self.ocr: return ""
         try:
-            img_b64 = base64.b64encode(image_bytes).decode('utf-8')
-            resp = requests.post(self.in_url, data={'key': self.api_key, 'method': 'base64', 'body': img_b64, 'json': 1})
-            if resp.json().get('status') != 1: return ""
-            req_id = resp.json().get('request')
-            
-            for _ in range(20):
-                time.sleep(2)
-                res = requests.get(f"{self.res_url}?key={self.api_key}&action=get&id={req_id}&json=1").json()
-                if res.get('status') == 1: return res.get('request')
-            return ""
+            return self.ocr.classification(image_bytes)
         except: return ""
 
 # ==============================================================================
-# MAIN CONTROLLER (EnhancedCaptchaSolver)
+# 2. MANUAL HANDLER (Telegram)
+# ==============================================================================
+
+class TelegramCaptchaHandler:
+    def __init__(self, c2_instance=None):
+        self.enabled = Config.MANUAL_CAPTCHA_ENABLED and NOTIFIER_AVAILABLE
+        self.timeout = Config.MANUAL_CAPTCHA_TIMEOUT
+        self.c2 = c2_instance
+    
+    def request_manual_solution(self, image_bytes: bytes, location: str, session_age: int = 0, **kwargs) -> Optional[str]:
+        if not self.enabled: return None
+        caption = f"🔐 CAPTCHA ({location})\nAge: {session_age}s"
+        try:
+            notifier.send_photo_bytes(image_bytes, caption)
+        except: pass
+        
+        if self.c2:
+            return self.c2.wait_for_captcha(timeout=self.timeout)
+        else:
+            return notifier.wait_for_captcha_reply(timeout=self.timeout)
+
+# ==============================================================================
+# 3. ENHANCED CONTROLLER (The Fix)
 # ==============================================================================
 
 class EnhancedCaptchaSolver:
     """
-    Main Controller. Handles Strategy selection, Validation, and Page Interaction.
+    Controller that satisfies EliteSniperV2 API requirements
+    while using Strategy Pattern for solving.
     """
     
-    def __init__(self, mode: str = "AUTO", c2_instance=None):
-        # Override mode with Config if set to AUTO/Production
-        self.mode = Config.EXECUTION_MODE
+    def __init__(self, mode: str = "HYBRID", c2_instance=None):
+        self.mode = Config.EXECUTION_MODE # Force config mode
         self.c2 = c2_instance
+        self.manual_handler = TelegramCaptchaHandler(c2_instance)
         self.strategy = self._select_strategy()
-        logger.info(f"[Captcha] System Active. Provider: {self.strategy.name()} | Mode: {self.mode}")
+        
+        # Internal state for pre-solving
+        self._pre_solved_code = None
+        self._pre_solved_time = 0
+        
+        logger.info(f"[Captcha] Initialized. Strategy: {self.strategy.name()} | Mode: {self.mode}")
 
-    def _select_strategy(self):
+    def _select_strategy(self) -> CaptchaStrategy:
         prov = Config.CAPTCHA_PROVIDER
         key = Config.CAPTCHA_API_KEY
-        
         if prov == "CAPSOLVER" and key: return CapSolverStrategy(key)
         if prov == "CAPMONSTER" and key: return CapMonsterStrategy(key)
-        if prov == "2CAPTCHA" and key: return TwoCaptchaStrategy(key)
-        
-        logger.warning("No valid External Provider configured. Fallback to LOCAL.")
         return LocalDDDDOCRStrategy()
 
-    def _validate(self, code: str) -> Tuple[bool, str]:
-        if not code: return False, "EMPTY"
-        # Cleaning
+    def _clean_result(self, text: str) -> str:
+        if not text: return ""
         allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        code = "".join([c for c in code if c in allowed]).lower()
-        
-        if len(code) == 6: return True, "VALID"
-        if len(code) in [7, 8]: return True, "AGING_OK"
+        return "".join([c for c in text if c in allowed]).lower()
+
+    def validate_captcha_result(self, code: str) -> Tuple[bool, str]:
+        if not code: return False, "EMPTY"
+        code = self._clean_result(code)
+        length = len(code)
+        black_patterns = ["4333", "333", "444", "0000", "4444", "1111"]
+        if code in black_patterns or (len(set(code)) == 1 and length > 3):
+            return False, "BLACK_DETECTED"
+        if length == 6: return True, "VALID"
+        if length in [7, 8]: return True, f"AGING_{length}"
+        if length < 4: return False, "TOO_SHORT"
         return False, "INVALID_LEN"
 
     def solve(self, image_bytes: bytes, location: str = "SOLVE") -> Tuple[str, str]:
-        # 1. Black Captcha Check (Poisoned session)
+        # 1. Black Captcha Check
         if len(image_bytes) < 2000:
-            logger.critical(f"[{location}] BLACK CAPTCHA DETECTED - ABORT")
             return "", "BLACK_IMAGE"
 
-        # 2. Strategy Execution
-        start = time.time()
+        # 2. Strategy Solve
         code = self.strategy.solve(image_bytes)
-        duration = time.time() - start
+        code = self._clean_result(code)
         
-        # 3. Validation
-        is_valid, status = self._validate(code)
+        # 3. Validate
+        is_valid, status = self.validate_captcha_result(code)
         
         if is_valid:
-            logger.info(f"[{location}] Solved: '{code}' in {duration:.2f}s ({status})")
+            logger.info(f"[{location}] Solved via {self.strategy.name()}: '{code}'")
             return code, status
-            
-        # 4. Manual Fallback (Only in HYBRID/MANUAL modes)
-        if self.mode != "AUTO" and Config.MANUAL_CAPTCHA_ENABLED:
-            logger.warning(f"[{location}] Auto failed ({status}). Trying Telegram...")
-            # Simple telegram send wrapper
-            try:
-                notifier.send_photo_bytes(image_bytes, f"CAPTCHA ({location})\nReply 6 chars:")
-                reply = notifier.wait_for_captcha_reply(timeout=Config.MANUAL_CAPTCHA_TIMEOUT)
-                if reply: return reply, "MANUAL"
-            except: pass
             
         return "", status
 
-    # --- Page Interaction Methods ---
+    # ==========================================================================
+    # API METHODS (COMPATIBILITY LAYER)
+    # ==========================================================================
 
-    def safe_captcha_check(self, page: Page, location: str = "CHECK") -> Tuple[bool, bool]:
-        """Verify if captcha is present"""
+    def _get_captcha_image(self, page: Page, location: str) -> Optional[bytes]:
+        # Try Base64 (German Embassy style)
         try:
-            # Check content text first (fastest)
-            txt = page.content().lower()
-            if not any(k in txt for k in ["captcha", "security code", "verkaptxt"]):
+            div = page.locator("captcha > div").first
+            if div.is_visible(timeout=500):
+                style = div.get_attribute("style") or ""
+                import re
+                match = re.search(r"base64,([A-Za-z0-9+/=]+)", style)
+                if match: return base64.b64decode(match.group(1))
+        except: pass
+        
+        # Fallback Screenshot
+        selectors = ["captcha > div", "div.captcha-image", "div#captcha", "img[alt*='captcha']"]
+        for sel in selectors:
+            try:
+                el = page.locator(sel).first
+                if el.is_visible(timeout=500): return el.screenshot()
+            except: continue
+        return None
+
+    def solve_from_page(
+        self, 
+        page: Page, 
+        location: str = "GENERAL",
+        timeout: int = 10000,
+        session_age: int = 0,     # <--- ADDED: Compatibility Argument
+        attempt: int = 1,         # <--- ADDED: Compatibility Argument
+        max_attempts: int = 5     # <--- ADDED: Compatibility Argument
+    ) -> Tuple[bool, Optional[str], str]: # <--- UPDATED: Returns 3 values (success, code, status)
+        
+        # Check pre-solved
+        if self._pre_solved_code and (time.time() - self._pre_solved_time < 30):
+            code = self._pre_solved_code
+            self._pre_solved_code = None
+            logger.info(f"[{location}] Using pre-solved code: {code}")
+            return True, code, "PRE_SOLVED"
+
+        img_bytes = self._get_captcha_image(page, location)
+        if not img_bytes: return False, None, "NO_IMAGE"
+        
+        # AUTO MODE (Strategy)
+        code, status = self.solve(img_bytes, location)
+        
+        # Auto success?
+        if code and "VALID" in status or "AGING" in status:
+            return True, code, status
+            
+        # Manual Fallback
+        if self.mode != "AUTO" and Config.MANUAL_CAPTCHA_ENABLED:
+            logger.info(f"[{location}] Auto failed ({status}). Trying Manual...")
+            man_code = self.manual_handler.request_manual_solution(img_bytes, location, session_age)
+            if man_code:
+                return True, man_code, "MANUAL"
+                
+        return False, None, status
+
+    def solve_form_captcha_with_retry(
+        self, 
+        page: Page, 
+        location: str = "FORM_RETRY",
+        max_attempts: int = 5,    # <--- Compatibility
+        session_age: int = 0      # <--- Compatibility
+    ) -> Tuple[bool, Optional[str], str]:
+        
+        for i in range(max_attempts):
+            success, code, status = self.solve_from_page(page, f"{location}_{i+1}", session_age=session_age)
+            if success:
+                return True, code, status
+            
+            # Reload if failed
+            if i < max_attempts - 1:
+                self.reload_captcha(page)
+                time.sleep(1)
+                
+        return False, None, "MAX_RETRIES"
+
+    def pre_solve(self, page: Page, location: str) -> Tuple[bool, Optional[str], str]:
+        """Pre-solve logic for speed"""
+        img_bytes = self._get_captcha_image(page, location)
+        if not img_bytes: return False, None, "NO_IMAGE"
+        
+        code, status = self.solve(img_bytes, location)
+        if code:
+            self._pre_solved_code = code
+            self._pre_solved_time = time.time()
+            return True, code, status
+        return False, None, status
+
+    def safe_captcha_check(self, page: Page, location: str) -> Tuple[bool, bool]:
+        """Check if captcha exists"""
+        try:
+            content = page.content().lower()
+            if not any(k in content for k in ["captcha", "security code", "verkaptxt"]):
                 return False, True
             
-            # Check selectors
             selectors = ["input[name='captchaText']", "input[name='captcha']", "input#captchaText"]
-            for s in selectors:
-                if page.locator(s).first.is_visible(timeout=1000):
+            for sel in selectors:
+                if page.locator(sel).first.is_visible(timeout=2000):
                     return True, True
             return False, True
         except: return False, False
 
-    def solve_from_page(self, page: Page, location: str = "PAGE") -> Tuple[bool, Optional[str]]:
-        """Full workflow: Find -> Solve -> Fill"""
-        try:
-            # 1. Get Image
-            img_bytes = None
-            # Try Base64 first (Most common on this site)
+    def reload_captcha(self, page: Page, location: str="RELOAD") -> bool:
+        selectors = [
+            "#appointment_newAppointmentForm_form_newappointment_refreshcaptcha",
+            "input[name='action:appointment_refreshCaptcha']",
+            "input[value='Load another picture']"
+        ]
+        for sel in selectors:
             try:
-                div = page.locator("captcha > div").first
-                if div.is_visible(timeout=500):
-                    style = div.get_attribute("style") or ""
-                    import re
-                    m = re.search(r"base64,([A-Za-z0-9+/=]+)", style)
-                    if m: img_bytes = base64.b64decode(m.group(1))
-            except: pass
-            
-            if not img_bytes:
-                # Screenshot fallback
-                try:
-                    el = page.locator("captcha > div").first
-                    if el.is_visible(): img_bytes = el.screenshot()
-                except: return False, None
+                btn = page.locator(sel).first
+                if btn.is_visible():
+                    btn.click()
+                    return True
+            except: continue
+        return False
 
-            if not img_bytes: return False, None # No image found
-
-            # 2. Solve
-            code, status = self.solve(img_bytes, location)
-            if not code: return False, None
-            
-            # 3. Fill
-            page.fill("input[name='captchaText']", code)
-            return True, code
-            
-        except Exception as e:
-            logger.error(f"[{location}] Flow Error: {e}")
-            return False, None
-
-    def submit_captcha(self, page: Page) -> bool:
-        """Submit the form"""
+    def submit_captcha(self, page: Page, method: str="auto") -> bool:
         try:
-            # Specific button or Enter key
-            btn = page.locator("input[name='submit']").first
-            if btn.is_visible():
-                btn.click()
-            else:
-                page.keyboard.press("Enter")
+            # Try specific buttons
+            buttons = ["input[name='submit']", "input[value='Weiter']", "button:has-text('Weiter')"]
+            for b in buttons:
+                if page.locator(b).first.is_visible():
+                    page.locator(b).first.click()
+                    return True
+            page.keyboard.press("Enter")
             return True
         except: return False
-        
-    def verify_captcha_solved(self, page: Page) -> Tuple[bool, str]:
-        """Check result"""
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=3000)
-            url = page.url.lower()
-            if "appointment_showday" in url: return True, "DAY_PAGE"
-            if "appointment_showform" in url: return True, "FORM_PAGE"
-            
-            content = page.content().lower()
-            if "security code" in content and "not correct" in content:
-                return False, "WRONG"
-            return True, "UNKNOWN" # Assume success if no error
-        except: return False, "ERROR"
-
-# Backward Compatibility Wrapper
-class CaptchaSolver:
-    def __init__(self):
-        self.solver = EnhancedCaptchaSolver()
-    def solve(self, image_bytes: bytes) -> str:
-        code, _ = self.solver.solve(image_bytes, "LEGACY")
-        return code
