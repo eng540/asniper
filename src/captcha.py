@@ -631,21 +631,48 @@ class EnhancedCaptchaSolver:
             # PRIORITY 1: CAPSOLVER (PAID/PREMIUM)
             # ═══════════════════════════════════════════════════════════════
             if self.capsolver.enabled:
+                # Attempt 1: Raw Image (Most accurate for clean captchas)
                 code, status = self.capsolver.solve_image_to_text(image_bytes, location)
                 
+                # Validation & Smart Retry Logic
+                should_retry = False
+                
                 if code and status == "SUCCESS":
-                    # Validate the result from CapSolver too
-                    # Even paid services can return "TOO_SHORT" or garbage
                     code = self._clean_ocr_result(code)
                     is_valid, val_status = self.validate_captcha_result(code, f"{location}_CAPSOLVER")
                     
                     if is_valid:
                         logger.info(f"[{location}] ✅ Using CapSolver result: '{code}'")
                         return code, "CAPSOLVER"
+                    
+                    if val_status == "TOO_SHORT":
+                        logger.warning(f"[{location}] CapSolver result too short: '{code}' - Retrying with ENHANCED image...")
+                        should_retry = True
                     else:
-                        logger.warning(f"[{location}] CapSolver returned invalid result: '{code}' ({val_status}) - Falling back...")
+                        logger.warning(f"[{location}] CapSolver invalid: '{code}' ({val_status})")
                 else:
-                     logger.warning(f"[{location}] CapSolver failed ({status}) - Falling back to local OCR...")
+                    logger.warning(f"[{location}] CapSolver failed ({status})")
+                
+                # Attempt 2: Preprocessed Image (Upscale + CLAHE)
+                # This fixes the "5 chars instead of 6" issue for faint text
+                if should_retry:
+                    try:
+                        processed_bytes = self._preprocess_image(image_bytes)
+                        code, status = self.capsolver.solve_image_to_text(processed_bytes, f"{location}_RETRY")
+                        
+                        if code and status == "SUCCESS":
+                            code = self._clean_ocr_result(code)
+                            is_valid, val_status = self.validate_captcha_result(code, f"{location}_CAPSOLVER_RETRY")
+                            
+                            if is_valid:
+                                logger.info(f"[{location}] ✅ CapSolver (Enhanced) result: '{code}'")
+                                return code, "CAPSOLVER_RETRY"
+                            else:
+                                logger.warning(f"[{location}] CapSolver retry invalid: '{code}' ({val_status})")
+                    except Exception as e:
+                        logger.error(f"[{location}] CapSolver retry error: {e}")
+                
+                logger.warning(f"[{location}] CapSolver chain failed - Falling back to local OCR...")
 
             # ═══════════════════════════════════════════════════════════════
             # PRIORITY 2: LOCAL DDDDOCR (FREE/FALLBACK)
@@ -911,9 +938,9 @@ class EnhancedCaptchaSolver:
                         logger.warning(f"[{location}] Manual solve also failed/timeout")
                         return False, None, "MANUAL_TIMEOUT"
             
-            # Fill captcha
+            # Fill captcha (Force write for reliability)
             try:
-                page.fill(input_selector, code, timeout=3000)
+                page.fill(input_selector, code, timeout=3000, force=True)
                 logger.info(f"[{location}] Captcha filled: '{code}' - Status: {status}")
                 return True, code, status
             except Exception as e:
