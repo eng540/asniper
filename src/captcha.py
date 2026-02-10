@@ -1,6 +1,6 @@
 """
-Elite Sniper v2.0 - Hybrid Captcha System (FIXED)
-Combines Strategy Pattern (CapSolver/CapMonster) with Legacy API Compatibility
+Elite Sniper v2.0 - Hybrid Captcha System (FIXED V2)
+Includes robust selector list for Month/Form pages
 """
 
 import time
@@ -38,7 +38,7 @@ except ImportError:
     NOTIFIER_AVAILABLE = False
 
 # ==============================================================================
-# 1. STRATEGY PATTERN (The Engine)
+# 1. STRATEGY PATTERN
 # ==============================================================================
 
 class CaptchaStrategy(abc.ABC):
@@ -111,7 +111,7 @@ class LocalDDDDOCRStrategy(CaptchaStrategy):
         except: return ""
 
 # ==============================================================================
-# 2. MANUAL HANDLER (Telegram)
+# 2. MANUAL HANDLER
 # ==============================================================================
 
 class TelegramCaptchaHandler:
@@ -133,25 +133,17 @@ class TelegramCaptchaHandler:
             return notifier.wait_for_captcha_reply(timeout=self.timeout)
 
 # ==============================================================================
-# 3. ENHANCED CONTROLLER (The Fix)
+# 3. ENHANCED CONTROLLER
 # ==============================================================================
 
 class EnhancedCaptchaSolver:
-    """
-    Controller that satisfies EliteSniperV2 API requirements
-    while using Strategy Pattern for solving.
-    """
-    
     def __init__(self, mode: str = "HYBRID", c2_instance=None):
-        self.mode = Config.EXECUTION_MODE # Force config mode
+        self.mode = Config.EXECUTION_MODE
         self.c2 = c2_instance
         self.manual_handler = TelegramCaptchaHandler(c2_instance)
         self.strategy = self._select_strategy()
-        
-        # Internal state for pre-solving
         self._pre_solved_code = None
         self._pre_solved_time = 0
-        
         logger.info(f"[Captcha] Initialized. Strategy: {self.strategy.name()} | Mode: {self.mode}")
 
     def _select_strategy(self) -> CaptchaStrategy:
@@ -179,29 +171,16 @@ class EnhancedCaptchaSolver:
         return False, "INVALID_LEN"
 
     def solve(self, image_bytes: bytes, location: str = "SOLVE") -> Tuple[str, str]:
-        # 1. Black Captcha Check
-        if len(image_bytes) < 2000:
-            return "", "BLACK_IMAGE"
-
-        # 2. Strategy Solve
+        if len(image_bytes) < 2000: return "", "BLACK_IMAGE"
         code = self.strategy.solve(image_bytes)
         code = self._clean_result(code)
-        
-        # 3. Validate
         is_valid, status = self.validate_captcha_result(code)
-        
         if is_valid:
             logger.info(f"[{location}] Solved via {self.strategy.name()}: '{code}'")
             return code, status
-            
         return "", status
 
-    # ==========================================================================
-    # API METHODS (COMPATIBILITY LAYER)
-    # ==========================================================================
-
     def _get_captcha_image(self, page: Page, location: str) -> Optional[bytes]:
-        # Try Base64 (German Embassy style)
         try:
             div = page.locator("captcha > div").first
             if div.is_visible(timeout=500):
@@ -210,8 +189,6 @@ class EnhancedCaptchaSolver:
                 match = re.search(r"base64,([A-Za-z0-9+/=]+)", style)
                 if match: return base64.b64decode(match.group(1))
         except: pass
-        
-        # Fallback Screenshot
         selectors = ["captcha > div", "div.captcha-image", "div#captcha", "img[alt*='captcha']"]
         for sel in selectors:
             try:
@@ -220,67 +197,37 @@ class EnhancedCaptchaSolver:
             except: continue
         return None
 
-    def solve_from_page(
-        self, 
-        page: Page, 
-        location: str = "GENERAL",
-        timeout: int = 10000,
-        session_age: int = 0,     # <--- ADDED: Compatibility Argument
-        attempt: int = 1,         # <--- ADDED: Compatibility Argument
-        max_attempts: int = 5     # <--- ADDED: Compatibility Argument
-    ) -> Tuple[bool, Optional[str], str]: # <--- UPDATED: Returns 3 values (success, code, status)
-        
-        # Check pre-solved
+    def solve_from_page(self, page: Page, location: str = "GENERAL", timeout: int = 10000, session_age: int = 0, attempt: int = 1, max_attempts: int = 5) -> Tuple[bool, Optional[str], str]:
         if self._pre_solved_code and (time.time() - self._pre_solved_time < 30):
             code = self._pre_solved_code
             self._pre_solved_code = None
-            logger.info(f"[{location}] Using pre-solved code: {code}")
             return True, code, "PRE_SOLVED"
 
         img_bytes = self._get_captcha_image(page, location)
         if not img_bytes: return False, None, "NO_IMAGE"
         
-        # AUTO MODE (Strategy)
         code, status = self.solve(img_bytes, location)
-        
-        # Auto success?
         if code and "VALID" in status or "AGING" in status:
             return True, code, status
             
-        # Manual Fallback
         if self.mode != "AUTO" and Config.MANUAL_CAPTCHA_ENABLED:
-            logger.info(f"[{location}] Auto failed ({status}). Trying Manual...")
             man_code = self.manual_handler.request_manual_solution(img_bytes, location, session_age)
-            if man_code:
-                return True, man_code, "MANUAL"
+            if man_code: return True, man_code, "MANUAL"
                 
         return False, None, status
 
-    def solve_form_captcha_with_retry(
-        self, 
-        page: Page, 
-        location: str = "FORM_RETRY",
-        max_attempts: int = 5,    # <--- Compatibility
-        session_age: int = 0      # <--- Compatibility
-    ) -> Tuple[bool, Optional[str], str]:
-        
+    def solve_form_captcha_with_retry(self, page: Page, location: str = "FORM_RETRY", max_attempts: int = 5, session_age: int = 0) -> Tuple[bool, Optional[str], str]:
         for i in range(max_attempts):
             success, code, status = self.solve_from_page(page, f"{location}_{i+1}", session_age=session_age)
-            if success:
-                return True, code, status
-            
-            # Reload if failed
+            if success: return True, code, status
             if i < max_attempts - 1:
                 self.reload_captcha(page)
                 time.sleep(1)
-                
         return False, None, "MAX_RETRIES"
 
     def pre_solve(self, page: Page, location: str) -> Tuple[bool, Optional[str], str]:
-        """Pre-solve logic for speed"""
         img_bytes = self._get_captcha_image(page, location)
         if not img_bytes: return False, None, "NO_IMAGE"
-        
         code, status = self.solve(img_bytes, location)
         if code:
             self._pre_solved_code = code
@@ -289,12 +236,10 @@ class EnhancedCaptchaSolver:
         return False, None, status
 
     def safe_captcha_check(self, page: Page, location: str) -> Tuple[bool, bool]:
-        """Check if captcha exists"""
         try:
             content = page.content().lower()
             if not any(k in content for k in ["captcha", "security code", "verkaptxt"]):
                 return False, True
-            
             selectors = ["input[name='captchaText']", "input[name='captcha']", "input#captchaText"]
             for sel in selectors:
                 if page.locator(sel).first.is_visible(timeout=2000):
@@ -303,10 +248,17 @@ class EnhancedCaptchaSolver:
         except: return False, False
 
     def reload_captcha(self, page: Page, location: str="RELOAD") -> bool:
+        """Robust reload with Month & Form page support"""
         selectors = [
+            # Form Page
             "#appointment_newAppointmentForm_form_newappointment_refreshcaptcha",
             "input[name='action:appointment_refreshCaptcha']",
-            "input[value='Load another picture']"
+            # Month Page (Category) - CRITICAL FOR LOOP FIX
+            "#appointment_captcha_month_refreshcaptcha",
+            "input[name='action:appointment_refreshCaptchamonth']",
+            # General Fallback
+            "input[value='Load another picture']",
+            "input[value='Bild laden']"
         ]
         for sel in selectors:
             try:
@@ -315,11 +267,18 @@ class EnhancedCaptchaSolver:
                     btn.click()
                     return True
             except: continue
-        return False
+        # JS Fallback
+        try:
+            return page.evaluate("""
+                const btns = Array.from(document.querySelectorAll('input[type=submit], button'));
+                const target = btns.find(b => (b.value||b.innerText||'').toLowerCase().includes('load another'));
+                if(target) { target.click(); return true; }
+                return false;
+            """)
+        except: return False
 
     def submit_captcha(self, page: Page, method: str="auto") -> bool:
         try:
-            # Try specific buttons
             buttons = ["input[name='submit']", "input[value='Weiter']", "button:has-text('Weiter')"]
             for b in buttons:
                 if page.locator(b).first.is_visible():
