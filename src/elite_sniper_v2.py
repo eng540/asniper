@@ -724,40 +724,70 @@ class EliteSniperV2:
     # ==================== Main Entry Point ====================
     
     def run(self) -> bool:
-        """Main execution entry point"""
+        """
+        Main Execution Entry Point (PRODUCTION MODE)
+        Supports both Single Session (AUTO) and Multi-Session (Orchestrated)
+        """
         logger.info("=" * 70)
-        logger.info(f"[ELITE SNIPER V{self.VERSION}] - STARTING EXECUTION")
-        logger.info("[MODE] Single Session (Multi-session ready for expansion)")
+        logger.info(f"[ELITE SNIPER V{self.VERSION}] - STARTING ENGINE")
+        logger.info(f"[MODE] {Config.EXECUTION_MODE} | [THREADS] {3 if Config.EXECUTION_MODE == 'AUTO' else 1}")
         logger.info(f"[ATTACK TIME] {Config.ATTACK_HOUR}:00 AM {Config.TIMEZONE}")
-        logger.info(f"[CURRENT TIME] Aden: {self.get_current_time_aden().strftime('%H:%M:%S')}")
         logger.info("=" * 70)
         
         try:
-            send_alert(f"[Elite Sniper v{self.VERSION} Started]\nSession: {self.session_id}")
+            # Alert Startup
+            send_alert(f"🚀 Sniper V2 Started\nID: {self.session_id}\nMode: {Config.EXECUTION_MODE}")
             
             with sync_playwright() as p:
+                # Launch Browser (Single instance shared among workers)
                 browser = p.chromium.launch(
                     headless=Config.HEADLESS,
                     args=Config.BROWSER_ARGS,
                     timeout=60000
                 )
-                
+                self.browser = browser
                 logger.info("[BROWSER] Launched successfully")
-                self.browser = browser  
-                worker_id = 1 
+
+                # ---------------------------------------------------------
+                # MULTI-SESSION ORCHESTRATION (The Missing Part)
+                # ---------------------------------------------------------
+                if Config.EXECUTION_MODE == "AUTO" or Config.EXECUTION_MODE == "HYBRID":
+                    logger.info("⚔️  ENGAGING MULTI-SESSION MODE (1 Scout + 2 Attackers)")
+                    
+                    threads = []
+                    # Create 3 Workers
+                    for i in range(1, 4):
+                        t = Thread(target=self.session_worker, args=(browser, i), name=f"Worker-{i}")
+                        t.daemon = True
+                        threads.append(t)
+                    
+                    # Start Threads
+                    for t in threads:
+                        t.start()
+                        time.sleep(2) # Stagger start to prevent ban
+                    
+                    # Monitor Loop
+                    try:
+                        while any(t.is_alive() for t in threads):
+                            if self.stop_event.is_set():
+                                break
+                            time.sleep(1)
+                    except KeyboardInterrupt:
+                        self.stop_event.set()
+                        
+                else:
+                    # Single Session Mode (Manual/Debug)
+                    logger.info("🛡️  ENGAGING SINGLE ROBUST SESSION")
+                    self._run_single_session(browser, worker_id=1)
+
+                # ---------------------------------------------------------
                 
-                try:
-                    self._run_single_session(browser, worker_id=worker_id)
-                except Exception as e:
-                    logger.error(f"[SESSION ERROR] {e}")
-                
+                # Shutdown Sequence
                 self.ntp_sync.stop_background_sync()
-                browser.close()
+                try: browser.close()
+                except: pass
                 
-                final_stats = self.global_stats.to_dict()
-                self.debug_manager.save_stats(final_stats, "final_stats.json")
-                self.debug_manager.create_session_report(final_stats)
-                
+                # Final Reporting
                 if self.global_stats.success:
                     self._handle_success()
                     return True
@@ -766,146 +796,14 @@ class EliteSniperV2:
                     return False
                 
         except KeyboardInterrupt:
-            logger.info("\n[STOP] Manual stop requested")
+            logger.info("[STOP] Manual Interruption")
             self.stop_event.set()
-            self.ntp_sync.stop_background_sync()
             return False
-            
         except Exception as e:
-            logger.error(f"💀 Critical error: {e}", exc_info=True)
+            logger.critical(f"🔥 ENGINE FAILURE: {e}", exc_info=True)
             return False
-            
         finally:
-            self.cleanup()
-
-    def _fill_booking_form(self, page: Page, session: SessionState, worker_logger) -> bool:
-        """Fill booking form using HUMAN TYPING"""
-        try:
-            worker_logger.info("📝 Filling form (Human Mode)...")
-            
-            fields = [
-                ("input[name='lastname']", Config.LAST_NAME),
-                ("input[name='firstname']", Config.FIRST_NAME),
-                ("input[name='email']", Config.EMAIL),
-                ("input[name='emailrepeat']", Config.EMAIL),
-                ("input[name='emailRepeat']", Config.EMAIL),
-                ("input[name='fields[0].content']", Config.PASSPORT),
-                ("input[name='fields[1].content']", Config.PHONE.replace("+", "00").strip())
-            ]
-            
-            for selector, value in fields:
-                try:
-                    if page.locator(selector).count() > 0:
-                        page.focus(selector)
-                        page.fill(selector, "")
-                        page.type(selector, value, delay=10) 
-                        page.evaluate(f"document.querySelector(\"{selector}\").blur()")
-                except: continue
-
-            if not self.select_category_by_value(page):
-                worker_logger.warning("Category Smart Targeting failed - fallback...")
-                try:
-                    page.evaluate("""
-                        const s = document.querySelector('select');
-                        if(s) { s.selectedIndex = 1; s.dispatchEvent(new Event('change')); }
-                    """)
-                except: pass
-
-            self.global_stats.forms_filled += 1
-            worker_logger.info("✅ Form filled (Humanized)")
-            return True
-        except Exception as e:
-            worker_logger.error(f"❌ Form fill error: {e}")
-            return False
-
-    def _submit_form(self, page: Page, session: SessionState, worker_logger, initial_code: Optional[str] = None) -> bool:
-        """Smart submit with proper waiting and validation."""
-        max_attempts = 5
-        worker_logger.info(f"🚀 STARTING SMART SUBMISSION SEQUENCE...")
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                captcha_input = page.locator("input[name='captchaText']").first
-                if not captcha_input.is_visible():
-                    if self._check_success(page, worker_logger): return True
-                    time.sleep(1)
-                    continue
-
-                code = None
-                if attempt == 1 and initial_code:
-                    worker_logger.info(f"⚡ [SPEED] Using pre-filled code: '{initial_code}'")
-                    code = initial_code
-                else:
-                    success, code, _ = self.solver.solve_from_page(page, f"SUBMIT_{attempt}", session_age=session.age())
-                    if not success or not code:
-                        self._refresh_captcha(page)
-                        continue
-
-                worker_logger.info(f"⌨️ Attempt {attempt}: Entering code '{code}'...")
-                captcha_input.click()
-                captcha_input.fill("")
-                time.sleep(0.2)
-                captcha_input.type(code, delay=50)
-                time.sleep(0.5)
-
-                worker_logger.info("⚡ Submitting and WAITING for response...")
-                try:
-                    with page.expect_navigation(timeout=15000):
-                        page.keyboard.press("Enter")
-                except: pass
-                
-                time.sleep(1) 
-                
-                if self._check_success(page, worker_logger): return True
-                
-                if page.locator("input[name='lastname']").count() > 0:
-                    worker_logger.warning(f"❌ Rejected (Soft) - Back on form. Retrying...")
-                    self._refresh_captcha(page)
-                    continue
-                    
-                content = page.content().lower()
-                if "ref-id" in content or "beginnen sie" in content:
-                    worker_logger.error("💀 Hard Failure: Session invalid.")
-                    return False
-
-            except Exception as e:
-                worker_logger.error(f"⚠️ Submit exception: {e}")
-                time.sleep(1)
-        
-        return False
-
-    def _check_success(self, page: Page, logger) -> bool:
-        content = page.content().lower()
-        success_terms = ["appointment number", "termin nummer", "successfully", "erfolgreich"]
-        for term in success_terms:
-            if term in content:
-                logger.critical(f"🏆 VICTORY! Found marker: '{term}'")
-                self.global_stats.success = True
-                self.debug_manager.save_critical_screenshot(page, "VICTORY", 1)
-                self.stop_event.set()
-                return True
-        return False
-
-    def _refresh_captcha(self, page: Page):
-        try:
-            refresh = page.locator("#appointment_newAppointmentForm_form_newappointment_refreshcaptcha")
-            if refresh.is_visible(): refresh.click()
-            else: self.solver.reload_captcha(page)
-            time.sleep(1.5)
-        except: pass
-    
-    def _handle_success(self):
-        logger.info("\n" + "=" * 70)
-        logger.info("[SUCCESS] MISSION ACCOMPLISHED!")
-        logger.info("=" * 70)
-        send_alert(f"ELITE SNIPER V2.0 - SUCCESS!\n[+] Appointment booked!\nSession: {self.session_id}")
-    
-    def _handle_completion(self):
-        logger.info("\n" + "=" * 70)
-        logger.info("[STOP] Session completed without booking")
-        logger.info("=" * 70)
-
-if __name__ == "__main__":
+            self.cleanup()_name__ == "__main__":
     sniper = EliteSniperV2()
     success = sniper.run()
     sys.exit(0 if success else 1)
