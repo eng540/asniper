@@ -1,33 +1,32 @@
 """
 Elite Sniper v2.0 - Configuration Module
-Production Ready - High Frequency Trading Edition
+Enhanced with proxy support, timing thresholds, and category mappings
 """
 
 import os
 from dotenv import load_dotenv
 
-# Load env vars
 load_dotenv()
 load_dotenv("config.env")
+
 
 class Config:
     """Centralized configuration for Elite Sniper v2.0"""
     
-    # ==================== Identity & Auth ====================
+    # ==================== Telegram ====================
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
     
-    # ==================== Captcha Strategy ====================
-    # Options: LOCAL, CAPSOLVER, CAPMONSTER, 2CAPTCHA
-    # In Production, CAPSOLVER is recommended for speed.
-    CAPTCHA_PROVIDER = os.getenv("CAPTCHA_PROVIDER", "CAPSOLVER").upper()
-    CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "")
-    
-    # Manual Fallback (Only used if Service Fails in Hybrid Mode)
+    # ==================== Manual Captcha Settings ====================
+    # When OCR fails, send captcha to Telegram for manual solving
     MANUAL_CAPTCHA_ENABLED = os.getenv("MANUAL_CAPTCHA", "true").lower() == "true"
-    MANUAL_CAPTCHA_TIMEOUT = int(os.getenv("MANUAL_CAPTCHA_TIMEOUT", "45"))  # Reduced timeout
+    MANUAL_CAPTCHA_TIMEOUT = int(os.getenv("MANUAL_CAPTCHA_TIMEOUT", "60"))  # seconds
+
+    # ==================== CapSolver Settings ====================
+    CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY")
+    CAPSOLVER_ENABLED = os.getenv("CAPSOLVER_ENABLED", "true").lower() == "true"
     
-    # ==================== Applicant Data ====================
+    # ==================== User Data ====================
     LAST_NAME = os.getenv("LAST_NAME")
     FIRST_NAME = os.getenv("FIRST_NAME")
     EMAIL = os.getenv("EMAIL")
@@ -38,48 +37,65 @@ class Config:
     TARGET_URL = os.getenv("TARGET_URL")
     TIMEZONE = "Asia/Aden"  # GMT+3
     
-    # ==================== Session Logic ====================
-    # Optimized for High-Competition
-    SESSION_MAX_AGE = 240         # 4 minutes max (Fresh sessions are faster)
-    SESSION_MAX_IDLE = 10         # Refresh quickly if idle
-    HEARTBEAT_INTERVAL = 5        # Aggressive keep-alive
-    MAX_CAPTCHA_ATTEMPTS = 5      
-    MAX_CONSECUTIVE_ERRORS = 3    
+    # ==================== Proxies (3 sessions) ====================
+    # Format: "http://user:pass@host:port" or "socks5://host:port"
+    # ==================== Proxies (Disabled) ====================
+    PROXIES = []
+    # PROXIES = [
+    #     os.getenv("PROXY_1"),
+    #     os.getenv("PROXY_2"),
+    #     os.getenv("PROXY_3"),
+    # ]
     
-    # ==================== Booking Meta ====================
+    # ==================== Session Thresholds ====================
+    SESSION_MAX_AGE = 300          # Maximum session age in seconds (REDUCED from 60 - server times out faster!)
+    SESSION_MAX_IDLE = 12         # Maximum idle time before refresh (REDUCED from 15)
+    HEARTBEAT_INTERVAL = 8        # Keep-alive interval in seconds (REDUCED from 10)
+    MAX_CAPTCHA_ATTEMPTS = 5      # Per session before rebirth
+    MAX_CONSECUTIVE_ERRORS = 3    # Before forced rebirth
+    
+    # ==================== Booking Purpose ====================
+    # Valid values: study, student, work, family, tourism, other
     PURPOSE = os.getenv("PURPOSE", "study")
     
-    # ==================== Attack Timing ====================
-    ATTACK_HOUR = 2               
-    PRE_ATTACK_MINUTE = 59        
-    PRE_ATTACK_SECOND = 45        # Start waking up 15s before
-    ATTACK_WINDOW_MINUTES = 2     
+    # ==================== Timing Configuration ====================
+    ATTACK_HOUR = 2               # Attack hour in Aden time (2:00 AM)
+    PRE_ATTACK_MINUTE = 59        # Pre-attack minute (1:59 AM)
+    PRE_ATTACK_SECOND = 30        # Pre-attack second (1:59:30 AM)
+    ATTACK_WINDOW_MINUTES = 2     # Duration of attack window
     
-    # ==================== Stealth & Speed ====================
-    # Aggressive timing for production
-    PATROL_SLEEP_MIN = 5.0        
-    PATROL_SLEEP_MAX = 10.0       
-    WARMUP_SLEEP = 2.0            
-    ATTACK_SLEEP_MIN = 0.1        # Near-instant retry in attack mode
-    ATTACK_SLEEP_MAX = 0.5        
-    PRE_ATTACK_SLEEP = 0.1        
+    # ==================== Sleep Intervals ====================
+    PATROL_SLEEP_MIN = 10.0       # Normal patrol minimum sleep
+    PATROL_SLEEP_MAX = 20.0       # Normal patrol maximum sleep
+    WARMUP_SLEEP = 5.0            # Warmup mode sleep
+    ATTACK_SLEEP_MIN = 0.5        # Attack mode minimum sleep
+    ATTACK_SLEEP_MAX = 1.5        # Attack mode maximum sleep
+    PRE_ATTACK_SLEEP = 0.5        # Pre-attack ready state
     
-    # ==================== Keywords ====================
+    # ==================== Smart Targeting Configuration ====================
+    # The bot will scan dropdown options for these keywords in order.
+    # Priority 1 is checked first. If found, it's selected immediately.
     TARGET_KEYWORDS = [
-        "Yemeni national",       
-        "national language",     
-        "student visa",          
-        "Student",               
-        "Studium",               
-        "Sprachkurs",            
-        "University",            
-        "Course"                 
+        "Yemeni national",       # Priority 1: (The Specific Target)
+        "national language",     # Priority 2
+        "student visa",          # Priority 3
+        "Student",               # Priority 4
+        "Studium",               # Priority 5
+        "Sprachkurs",            # Priority 6
+        "University",            # Priority 7
+        "Course"                 # Priority 8 (Fallback)
     ]
     
-    # ==================== Infrastructure ====================
-    NTP_SERVERS = ["pool.ntp.org", "time.google.com"]
-    NTP_SYNC_INTERVAL = 300
+    # ==================== NTP Servers ====================
+    NTP_SERVERS = [
+        "pool.ntp.org",
+        "time.google.com",
+        "time.windows.com",
+        "time.nist.gov"
+    ]
+    NTP_SYNC_INTERVAL = 300  # Re-sync every 5 minutes
     
+    # ==================== Browser Configuration ====================
     HEADLESS = True
     BROWSER_ARGS = [
         "--disable-blink-features=AutomationControlled",
@@ -88,17 +104,23 @@ class Config:
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--no-first-run",
-        "--disable-extensions",
-        "--disable-infobars"
+        "--disable-extensions"
     ]
     
+    # ==================== Evidence Configuration ====================
     EVIDENCE_DIR = "evidence"
-    MAX_EVIDENCE_AGE_HOURS = 24
+    MAX_EVIDENCE_AGE_HOURS = 48  # Auto-cleanup after 48 hours
 
-    # ==================== Runtime ====================
+    # ==================== Development ====================
     DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
-    # Force AUTO in high competition if not specified
-    EXECUTION_MODE = os.getenv("EXECUTION_MODE", "AUTO").upper()
     
-    # Proxies (Structure only)
-    PROXIES = []
+    # ==================== Execution Mode ====================
+    # AUTO, MANUAL, HYBRID
+    # Allow explicit override via CAPTCHA_MANUAL_ONLY
+    CAPTCHA_MANUAL_ONLY = os.getenv("CAPTCHA_MANUAL_ONLY", "false").lower() == "true"
+    
+    if CAPTCHA_MANUAL_ONLY:
+        EXECUTION_MODE = "MANUAL"
+    else:
+        EXECUTION_MODE = os.getenv("EXECUTION_MODE", "HYBRID").upper()
+
