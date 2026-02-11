@@ -37,15 +37,13 @@ class Config:
     TARGET_URL = os.getenv("TARGET_URL")
     TIMEZONE = "Asia/Aden"  # GMT+3
     
-    # ==================== Proxies (3 sessions) ====================
-    # Format: "http://user:pass@host:port" or "socks5://host:port"
-    # ==================== Proxies (Enabled) ====================
-    # PROXIES = []
-    PROXIES = [
-        os.getenv("PROXY_1"),
-        os.getenv("PROXY_2"),
-        os.getenv("PROXY_3"),
-    ]
+    # ==================== Proxies (Disabled) ====================
+    PROXIES = []
+    # PROXIES = [
+    #     os.getenv("PROXY_1"),
+    #     os.getenv("PROXY_2"),
+    #     os.getenv("PROXY_3"),
+    # ]
     
     # ==================== Session Thresholds ====================
     SESSION_MAX_AGE = 300          # Maximum session age in seconds (REDUCED from 60 - server times out faster!)
