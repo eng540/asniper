@@ -396,8 +396,8 @@ class EliteSniperV2:
             """)
             
             # Timeouts
-            context.set_default_timeout(25000)
-            context.set_default_navigation_timeout(30000)
+            context.set_default_timeout(45000)
+            context.set_default_navigation_timeout(120000)
             
             # Resource blocking for performance
             def route_handler(route):
