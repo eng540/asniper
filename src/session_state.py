@@ -98,7 +98,7 @@ class SessionState:
     navigation_errors: int = 0
     
     # Limits (configurable)
-    max_age: float = 60.0           # Maximum session age in seconds
+    max_age: float = 120.0           # Maximum session age in seconds
     max_idle: float = 15.0          # Maximum idle time in seconds
     max_failures: int = 3            # Maximum consecutive failures
     max_captcha_attempts: int = 5    # Maximum captcha attempts per session
