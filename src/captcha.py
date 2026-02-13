@@ -159,13 +159,16 @@ class CapSolverHandler:
             # Encode image to base64
             image_base64 = base64.b64encode(image_bytes).decode('utf-8')
             
-            # Prepare payload
+            # Prepare payload - Optimized for German Embassy Captcha (Fixed 6 chars)
             payload = {
                 "clientKey": self.api_key,
                 "task": {
                     "type": "ImageToTextTask",
-                    "module": "common",  # "common" or "number" - common is safer for alphanum
-                    "body": image_base64
+                    "module": "common",
+                    "body": image_base64,
+                    "nMin": 6,
+                    "nMax": 6,
+                    "caseSensitive": False
                 }
             }
             
